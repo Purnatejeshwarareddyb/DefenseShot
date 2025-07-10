@@ -67,7 +67,7 @@ DefenseShot/
 │   ├── ...
 │   └── module11.py                  # Final module
 │
-├── study_materials/
+├── study_materials/       (****  because of the no space i am not uploding this file so please while creating the project by cloning thing please add this with your modules***)
 │   ├── module_1.pdf
 │   ├── module_2.pdf
 │   └── ... (up to module_10.pdf)
