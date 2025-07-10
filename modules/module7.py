@@ -1,0 +1,1368 @@
+# Module 7: PDF + Quiz logic
+# Enhanced Module 1: PDF + Quiz with Progress Tracking and Next Module Button
+# module1.py code with database integration and progress unlocking
+
+import pygame
+import sys
+import random
+import os
+import math
+import json
+import sqlite3
+from datetime import datetime
+import fitz  # PyMuPDF
+import subprocess
+import traceback
+
+
+# --- Dynamic Programming & Optimization Theory ---
+DP_THEORY = """
+Module 7: Dynamic Programming & Optimization
+DSA Topics: Dynamic Programming, Greedy Algorithms, Memoization
+Theme: Resource Optimization & Efficiency
+
+Where Used:
+- Dynamic Programming: Optimal resource allocation, strategy optimization
+- Greedy Algorithms: Quick tactical decisions, immediate optimizations
+- Memoization: Cache expensive calculations, improve performance
+
+Purpose:
+- Maximize efficiency with limited resources
+- Make optimal decisions under constraints
+- Improve system performance through caching
+"""
+
+
+# --- Database Setup and Functions ---
+def init_database():
+    """Initialize the database with all required tables"""
+    conn = sqlite3.connect('defense_training.db')
+    cursor = conn.cursor()
+
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            email TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Modules table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS modules (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            is_locked INTEGER DEFAULT 1,
+            required_score INTEGER DEFAULT 80
+        )
+    ''')
+
+    # User progress table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_progress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            module_id INTEGER,
+            score INTEGER,
+            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_unlocked INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (module_id) REFERENCES modules (id)
+        )
+    ''')
+
+    # Quiz results table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS quiz_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            module_id INTEGER,
+            score INTEGER,
+            total_questions INTEGER,
+            time_taken INTEGER,
+            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (module_id) REFERENCES modules (id)
+        )
+    ''')
+
+    # Insert default modules if they don't exist
+    modules_data = [
+        (1, "Defense Fundamentals", "Basic defense concepts and strategies", 0, 80),
+        (2, "Advanced Tactics", "Advanced tactical operations", 1, 80),
+        (3, "Strategic Planning", "Long-term strategic planning", 1, 80),
+        (4, "Intelligence Analysis", "Intelligence gathering and analysis", 1, 80),
+        (5, "Cyber Defense", "Cybersecurity and digital warfare", 1, 80),
+        (6, "Combat Operations", "Combat and field operations", 1, 80),
+        (7, "Dynamic Programming & Optimization", "Resource optimization and efficiency", 1, 80),
+        (8, "Advanced Systems", "Advanced defense systems", 1, 80),
+    ]
+
+    for module_data in modules_data:
+        cursor.execute('''
+            INSERT OR IGNORE INTO modules (id, name, description, is_locked, required_score)
+            VALUES (?, ?, ?, ?, ?)
+        ''', module_data)
+
+    conn.commit()
+    conn.close()
+
+
+def save_quiz_result(user_id, module_id, score, total_questions, time_taken):
+    """Save quiz result to database"""
+    conn = sqlite3.connect('defense_training.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO quiz_results (user_id, module_id, score, total_questions, time_taken)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, module_id, score, total_questions, time_taken))
+
+    conn.commit()
+    conn.close()
+
+
+def update_progress(user_id, module_id, score):
+    """Update user progress for a module"""
+    conn = sqlite3.connect('defense_training.db')
+    cursor = conn.cursor()
+
+    # Check if progress entry exists
+    cursor.execute('''
+        SELECT id FROM user_progress WHERE user_id = ? AND module_id = ?
+    ''', (user_id, module_id))
+
+    if cursor.fetchone():
+        # Update existing progress
+        cursor.execute('''
+            UPDATE user_progress 
+            SET score = ?, completed_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND module_id = ?
+        ''', (score, user_id, module_id))
+    else:
+        # Insert new progress
+        cursor.execute('''
+            INSERT INTO user_progress (user_id, module_id, score, is_unlocked)
+            VALUES (?, ?, ?, 1)
+        ''', (user_id, module_id, score))
+
+    conn.commit()
+    conn.close()
+
+
+def unlock_next_module(user_id, current_module_id):
+    """Unlock the next module if current module is passed"""
+    conn = sqlite3.connect('defense_training.db')
+    cursor = conn.cursor()
+
+    next_module_id = current_module_id + 1
+
+    # Check if next module exists
+    cursor.execute('SELECT id FROM modules WHERE id = ?', (next_module_id,))
+    if cursor.fetchone():
+        # Check if user already has progress for next module
+        cursor.execute('''
+            SELECT id FROM user_progress WHERE user_id = ? AND module_id = ?
+        ''', (user_id, next_module_id))
+
+        if cursor.fetchone():
+            # Update existing entry
+            cursor.execute('''
+                UPDATE user_progress 
+                SET is_unlocked = 1 
+                WHERE user_id = ? AND module_id = ?
+            ''', (user_id, next_module_id))
+        else:
+            # Create new entry
+            cursor.execute('''
+                INSERT INTO user_progress (user_id, module_id, score, is_unlocked)
+                VALUES (?, ?, 0, 1)
+            ''', (user_id, next_module_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_logged_in_user_id():
+    """Get the current logged-in user ID from session"""
+    try:
+        # Create user_data directory if it doesn't exist
+        os.makedirs("user_data", exist_ok=True)
+
+        # Check if session file exists
+        session_file = "user_data/session.json"
+        if os.path.exists(session_file):
+            with open(session_file, "r") as f:
+                session = json.load(f)
+                return session.get("user_id", None)
+        else:
+            # Create a default session for testing
+            default_session = {"user_id": 1, "username": "test_user"}
+            with open(session_file, "w") as f:
+                json.dump(default_session, f)
+            return 1
+    except Exception as e:
+        print(f"Error reading session: {e}")
+        return 1  # Default user ID for testing
+
+
+def create_default_user():
+    """Create a default user for testing if none exists"""
+    conn = sqlite3.connect('defense_training.db')
+    cursor = conn.cursor()
+
+    # Check if any users exist
+    cursor.execute('SELECT COUNT(*) FROM users')
+    if cursor.fetchone()[0] == 0:
+        # Create default user
+        cursor.execute('''
+            INSERT INTO users (username, password, email)
+            VALUES (?, ?, ?)
+        ''', ("test_user", "password123", "test@example.com"))
+        conn.commit()
+
+    conn.close()
+
+
+def show_error_message(screen, title, message):
+    """Show error message without disrupting main screen"""
+    error_surface = pygame.Surface((400, 200))
+    error_surface.fill((0, 0, 0))
+    pygame.draw.rect(error_surface, (255, 0, 0), (0, 0, 400, 200), 2)
+
+    error_font = pygame.font.Font(None, 24)
+    title_text = error_font.render(title, True, (255, 0, 0))
+    message_text = error_font.render(message, True, (255, 255, 255))
+
+    error_surface.blit(title_text, (50, 50))
+    error_surface.blit(message_text, (50, 100))
+
+    # Blit to main screen
+    screen.blit(error_surface, (screen.get_width() // 2 - 200, screen.get_height() // 2 - 100))
+    pygame.display.flip()
+
+    # Wait 2 seconds
+    pygame.time.wait(2000)
+
+
+def open_module_8():
+    """Open module_8.py file with improved path handling"""
+    # Try multiple possible paths
+    possible_paths = [
+        r"C:\Users\B.PURNA\PycharmProjects\DefenseShot\modules\module8.py",
+        os.path.join(os.path.dirname(__file__), "modules", "module8.py"),
+        os.path.join(os.path.dirname(__file__), "module8.py"),
+        "modules/module8.py",
+        "module8.py"
+    ]
+
+    module8_path = None
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            module8_path = path
+            break
+
+    if module8_path:
+        try:
+            subprocess.Popen([sys.executable, module8_path])
+            print(f"✅ Module 8 opened successfully from: {module8_path}")
+            return True
+        except Exception as e:
+            print(f"❌ Error opening Module 8: {e}")
+            return False
+    else:
+        print("❌ Module 8 file not found")
+        return False
+
+# --- Button Class ---
+class Button:
+    def __init__(self, x, y, width, height, text, color, text_color, font):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.color = color
+        self.text_color = text_color
+        self.font = font
+        self.hover_color = tuple(min(255, c + 30) for c in color)
+        self.is_hovered = False
+        self.visible = True
+        self.enabled = True
+        self.glow_animation = 0
+
+    def handle_event(self, event):
+        if not self.visible or not self.enabled:
+            return False
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1 and self.rect.collidepoint(event.pos):
+                return True
+        elif event.type == pygame.MOUSEMOTION:
+            self.is_hovered = self.rect.collidepoint(event.pos)
+
+        return False
+
+    def update(self):
+        if self.visible and self.enabled:
+            self.glow_animation += 0.1
+            if self.glow_animation > 2 * math.pi:
+                self.glow_animation = 0
+
+    def draw(self, surface):
+        if not self.visible:
+            return
+
+        # Draw glow effect for enabled buttons
+        if self.enabled:
+            glow_intensity = int(20 + 15 * math.sin(self.glow_animation))
+            glow_color = tuple(min(255, c + glow_intensity) for c in self.color)
+            glow_rect = self.rect.inflate(6, 6)
+            pygame.draw.rect(surface, glow_color, glow_rect, border_radius=8)
+
+        # Draw main button
+        current_color = self.hover_color if self.is_hovered else self.color
+        if not self.enabled:
+            current_color = tuple(c // 2 for c in current_color)
+
+        pygame.draw.rect(surface, current_color, self.rect, border_radius=5)
+        pygame.draw.rect(surface, (255, 255, 255), self.rect, 2, border_radius=5)
+
+        # Draw text
+        text_surface = self.font.render(self.text, True, self.text_color)
+        text_rect = text_surface.get_rect(center=self.rect.center)
+        surface.blit(text_surface, text_rect)
+
+
+# --- Pygame Initialization ---
+pygame.init()
+pygame.mixer.init()
+
+# Display setup - MUST COME FIRST
+infoObject = pygame.display.Info()
+WIDTH, HEIGHT = infoObject.current_w, infoObject.current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+pygame.display.set_caption("Elite Sniper Academy - Defense Training System")
+
+# THEN load background image
+try:
+    background_image = pygame.image.load(R"C:\Users\B.PURNA\PycharmProjects\DefenseShot\assets\images\background3.jpg")
+    background_image = pygame.transform.scale(background_image, (WIDTH, HEIGHT))
+except:
+    print("Warning: Could not load background image - using fallback")
+    # Create fallback background using the now-defined WIDTH and HEIGHT
+    background_image = pygame.Surface((WIDTH, HEIGHT))
+    for y in range(HEIGHT):
+        color_ratio = y / HEIGHT
+        r = int(20 + (60 - 20) * color_ratio)
+        g = int(30 + (80 - 30) * color_ratio)
+        b = int(60 + (120 - 60) * color_ratio)
+        pygame.draw.line(background_image, (r, g, b), (0, y), (WIDTH, y))
+
+# Display setup
+infoObject = pygame.display.Info()
+WIDTH, HEIGHT = infoObject.current_w, infoObject.current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+pygame.display.set_caption("Elite Sniper Academy - Defense Training System")
+clock = pygame.time.Clock()
+
+# Fonts
+font_small = pygame.font.SysFont('arial', 18)
+font = pygame.font.SysFont('arial', 24)
+font_medium = pygame.font.SysFont('arial', 28)
+big_font = pygame.font.SysFont('arial', 36)
+title_font = pygame.font.SysFont('arial', 48, bold=True)
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+ORANGE = (255, 165, 0)
+PURPLE = (128, 0, 128)
+CYAN = (0, 255, 255)
+GRAY = (128, 128, 128)
+DARK_GRAY = (64, 64, 64)
+
+# Game constants
+CROSSHAIR_SIZE = 40
+WIND_STRENGTH = 0
+DIFFICULTY_LEVELS = {"Easy": 1.0, "Medium": 1.5, "Hard": 2.0, "Expert": 2.5}
+PAGE_DISPLAY_TIME = 5  # seconds for PDF viewing
+
+# Global variable to track if progress has been updated
+progress_updated = False
+
+
+# --- Core Classes ---
+class Particle:
+    def __init__(self, x, y, color, velocity, life_time=60):
+        self.x = x
+        self.y = y
+        self.color = color
+        self.velocity = velocity
+        self.life_time = life_time
+        self.max_life = life_time
+        self.size = random.randint(2, 6)
+
+    def update(self):
+        self.x += self.velocity[0]
+        self.y += self.velocity[1]
+        self.life_time -= 1
+        self.velocity = (self.velocity[0] * 0.98, self.velocity[1] + 0.2)  # Gravity
+
+    def draw(self, surface):
+        if self.life_time > 0:
+            alpha = int(255 * (self.life_time / self.max_life))
+            color_with_alpha = (*self.color[:3], alpha)
+            pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.size)
+
+
+class ParticleSystem:
+    def __init__(self):
+        self.particles = []
+
+    def add_explosion(self, x, y, color=ORANGE):
+        for _ in range(15):
+            velocity = (random.uniform(-8, 8), random.uniform(-8, -2))
+            self.particles.append(Particle(x, y, color, velocity, random.randint(30, 60)))
+
+    def add_hit_effect(self, x, y):
+        for _ in range(8):
+            velocity = (random.uniform(-4, 4), random.uniform(-4, 4))
+            self.particles.append(Particle(x, y, GREEN, velocity, 20))
+
+    def update(self):
+        self.particles = [p for p in self.particles if p.life_time > 0]
+        for particle in self.particles:
+            particle.update()
+
+    def draw(self, surface):
+        for particle in self.particles:
+            particle.draw(surface)
+
+
+class Bullet:
+    def __init__(self, x, y, wind_effect=0):
+        self.start_x = x
+        self.start_y = y
+        self.x = x - 45
+        self.y = y - 30
+        self.vel_y = 15
+        self.wind_effect = wind_effect
+        self.trail = []
+        self.active = True
+        self.distance_traveled = 0
+
+    def move(self):
+        if self.y > -50:
+            self.y -= self.vel_y
+            self.x += self.wind_effect
+            self.distance_traveled += self.vel_y
+            self.trail.append((self.x + 45, self.y + 35))
+            if len(self.trail) > 8:
+                self.trail.pop(0)
+        else:
+            self.active = False
+
+    def draw(self, surface):
+        for i, pos in enumerate(self.trail):
+            alpha = int(255 * (i / len(self.trail)))
+            trail_color = (255, 255, 0, alpha)
+            pygame.draw.circle(surface, (255, 255, 0), pos, max(1, 4 - i))
+        pygame.draw.circle(surface, YELLOW, (int(self.x + 45), int(self.y + 35)), 6)
+        pygame.draw.circle(surface, ORANGE, (int(self.x + 45), int(self.y + 35)), 3)
+
+
+class Bottle:
+    def __init__(self, label, x, y, correct=False, difficulty=1.0):
+        self.label = label
+        self.rect = pygame.Rect(x, y, 70, 120)
+        self.base_vel = random.choice([-2, 2]) * difficulty
+        self.vel = self.base_vel
+        self.correct = correct
+        self.hit_animation = 0
+        self.rotation = 0
+        self.scale = 1.0
+        self.color = (139, 69, 19) if not correct else (0, 150, 0)
+        self.bob_offset = random.random() * 6.28
+        self.original_y = y
+
+    def update(self):
+        self.rect.x += self.vel
+        if self.rect.left <= 50 or self.rect.right >= WIDTH - 50:
+            self.vel = -self.vel * random.uniform(0.8, 1.2)
+        self.bob_offset += 0.05
+        self.rect.y = self.original_y + math.sin(self.bob_offset) * 8
+        if self.hit_animation > 0:
+            self.hit_animation -= 1
+            self.scale = 1.0 + (self.hit_animation / 30.0) * 0.3
+            self.rotation += 15
+
+    def draw(self, surface):
+        scaled_width = int(self.rect.width * self.scale)
+        scaled_height = int(self.rect.height * self.scale)
+        scaled_rect = pygame.Rect(
+            self.rect.centerx - scaled_width // 2,
+            self.rect.centery - scaled_height // 2,
+            scaled_width,
+            scaled_height
+        )
+        if self.correct:
+            for i in range(3):
+                glow_rect = scaled_rect.inflate(i * 4, i * 4)
+                pygame.draw.ellipse(surface, (0, 255, 0, 100 - i * 30), glow_rect)
+        pygame.draw.ellipse(surface, self.color, scaled_rect)
+        pygame.draw.ellipse(surface, WHITE, scaled_rect, 3)
+        text = font_small.render(self.label, True, WHITE)
+        text_rect = text.get_rect(center=scaled_rect.center)
+        surface.blit(text, text_rect)
+
+
+class WindSystem:
+    def __init__(self):
+        self.strength = 0
+        self.direction = 1
+        self.change_timer = 0
+
+    def update(self):
+        self.change_timer += 1
+        if self.change_timer > 180:
+            self.strength = random.uniform(0, 3)
+            self.direction = random.choice([-1, 1])
+            self.change_timer = 0
+
+    def get_effect(self):
+        return self.strength * self.direction * 0.3
+
+    def draw_indicator(self, surface):
+        indicator_x = 50
+        indicator_y = HEIGHT - 150
+        pygame.draw.rect(surface, BLACK, (indicator_x - 5, indicator_y - 5, 110, 30))
+        pygame.draw.rect(surface, WHITE, (indicator_x - 5, indicator_y - 5, 110, 30), 2)
+        arrow_length = int(self.strength * 20)
+        if self.strength > 0:
+            start_x = indicator_x + 50
+            end_x = start_x + (arrow_length * self.direction)
+            pygame.draw.line(surface, CYAN, (start_x, indicator_y + 10), (end_x, indicator_y + 10), 3)
+            if arrow_length > 5:
+                pygame.draw.polygon(surface, CYAN, [
+                    (end_x, indicator_y + 10),
+                    (end_x - 5 * self.direction, indicator_y + 5),
+                    (end_x - 5 * self.direction, indicator_y + 15)
+                ])
+        wind_text = font_small.render(f"Wind: {self.strength:.1f}", True, WHITE)
+        surface.blit(wind_text, (indicator_x, indicator_y - 25))
+
+
+class ScoreSystem:
+    def __init__(self):
+        self.score = 0
+        self.streak = 0
+        self.max_streak = 0
+        self.accuracy = []
+        self.time_bonuses = 0
+        self.total_shots = 0
+        self.hits = 0
+
+    def add_hit(self, time_taken, distance):
+        self.hits += 1
+        self.streak += 1
+        self.max_streak = max(self.max_streak, self.streak)
+        time_bonus = max(0, 50 - int(time_taken / 100))
+        self.time_bonuses += time_bonus
+        distance_bonus = int(distance / 10)
+        streak_multiplier = min(self.streak * 0.1, 2.0)
+        total_points = int((100 + time_bonus + distance_bonus) * (1 + streak_multiplier))
+        self.score += total_points
+        return total_points
+
+    def add_miss(self):
+        self.streak = 0
+        self.total_shots += 1
+
+    def get_accuracy(self):
+        if self.total_shots == 0:
+            return 0
+        return (self.hits / (self.hits + self.total_shots)) * 100
+
+    def draw_hud(self, surface):
+        hud_y = 60
+        score_text = font_medium.render(f"Score: {self.score:,}", True, YELLOW)
+        surface.blit(score_text, (20, hud_y))
+        streak_color = GREEN if self.streak > 2 else WHITE
+        streak_text = font.render(f"Streak: {self.streak}", True, streak_color)
+        surface.blit(streak_text, (20, hud_y + 35))
+        accuracy = self.get_accuracy()
+        acc_color = GREEN if accuracy > 80 else YELLOW if accuracy > 60 else RED
+        acc_text = font.render(f"Accuracy: {accuracy:.1f}%", True, acc_color)
+        surface.blit(acc_text, (20, hud_y + 70))
+
+
+class PDFReader:
+    def __init__(self, pdf_path):
+        self.doc = fitz.open(pdf_path)
+        self.total_pages = len(self.doc)
+        self.current_page = 0
+        self.page_surface = None
+        self.page_timer = 0
+        self.can_take_quiz = False
+        self.flip_animation = 0
+        self.scale = 1.0
+        self.load_current_page()
+
+    def load_current_page(self):
+        page = self.doc.load_page(self.current_page)
+        rect = page.rect
+        scale = min((WIDTH * 0.8) / rect.width, (HEIGHT * 0.8) / rect.height)
+        matrix = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=matrix)
+        mode = "RGB" if not pix.alpha else "RGBA"
+        self.page_surface = pygame.image.frombuffer(pix.samples, (pix.width, pix.height), mode)
+        self.page_timer = pygame.time.get_ticks()
+        self.can_take_quiz = False
+        self.flip_animation = 30
+
+    def next_page(self):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.load_current_page()
+
+    def previous_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.load_current_page()
+
+    def update(self):
+        if self.flip_animation > 0:
+            self.flip_animation -= 1
+            self.scale = 1.0 + (self.flip_animation / 30.0) * 0.2
+        if not self.can_take_quiz:
+            if (pygame.time.get_ticks() - self.page_timer) / 1000 >= PAGE_DISPLAY_TIME:
+                self.can_take_quiz = True
+
+    def draw(self, surface):
+        if not self.page_surface:
+            return
+
+        scaled_w = int(self.page_surface.get_width() * self.scale)
+        scaled_h = int(self.page_surface.get_height() * self.scale)
+        rect = pygame.Rect((WIDTH - scaled_w) // 2, (HEIGHT - scaled_h) // 2, scaled_w, scaled_h)
+        notebook = rect.inflate(60, 80)
+
+        pygame.draw.rect(surface, (240, 240, 220), notebook)
+        pygame.draw.rect(surface, DARK_GRAY, notebook, 5)
+        for i in range(5):
+            y = notebook.top + 50 + i * 40
+            pygame.draw.circle(surface, GRAY, (notebook.left + 20, y), 8)
+            pygame.draw.circle(surface, WHITE, (notebook.left + 20, y), 5)
+
+        pygame.draw.rect(surface, GRAY, rect.move(3, 3))
+        pygame.draw.rect(surface, WHITE, rect)
+        pygame.draw.rect(surface, DARK_GRAY, rect, 2)
+
+        if self.scale != 1.0:
+            scaled = pygame.transform.scale(self.page_surface, (scaled_w, scaled_h))
+            surface.blit(scaled, rect.topleft)
+        else:
+            surface.blit(self.page_surface, rect.topleft)
+
+        txt = font.render(f"Page {self.current_page + 1} of {self.total_pages}", True, DARK_GRAY)
+        surface.blit(txt, (rect.centerx - txt.get_width() // 2, rect.bottom + 10))
+        self.draw_timer(surface)
+
+    def draw_timer(self, surface):
+        elapsed = (pygame.time.get_ticks() - self.page_timer) / 1000
+        if not self.can_take_quiz:
+            remaining = max(0, PAGE_DISPLAY_TIME - elapsed)
+            timer_txt = font_medium.render(f"Reading... {remaining:.1f}s", True, RED)
+            pygame.draw.rect(surface, BLACK, (WIDTH - 220, 20, 200, 40))
+            pygame.draw.rect(surface, RED, (WIDTH - 220, 20, 200, 40), 2)
+            surface.blit(timer_txt, (WIDTH - 210, 30))
+            progress = elapsed / PAGE_DISPLAY_TIME
+            pygame.draw.rect(surface, GRAY, (WIDTH - 210, 65, 180, 10))
+            pygame.draw.rect(surface, YELLOW, (WIDTH - 210, 65, int(180 * progress), 10))
+        else:
+            msg = font_medium.render("Press Q to take quiz!", True, GREEN)
+            pygame.draw.rect(surface, BLACK, (WIDTH - 240, 20, 220, 40))
+            pygame.draw.rect(surface, GREEN, (WIDTH - 240, 20, 220, 40), 2)
+            surface.blit(msg, (WIDTH - 230, 30))
+
+
+# --- Game Data ---
+questions = [
+    {
+        "question": "During which war did the Indian Navy first engage all three Services on a large scale, as mentioned in the document?",
+        "options": ["A. Indo-Pak War of 1965", "B. World War II", "C. Indo-Pak War of 1971", "D. Kargil War of 1999"],
+        "answer": "C",
+        "difficulty": "Easy",
+        "category": "Naval Operations"
+    },
+    {
+        "question": "What was the primary target of the Indian Navy's Operation Trident on 04 December 1971?",
+        "options": ["A. Cox's Bazar airfield", "B. Pakistani military installations in East Pakistan", "C. Karachi harbour", "D. Pakistani submarine Ghazi"],
+        "answer": "C",
+        "difficulty": "Easy",
+        "category": "Operation Trident"
+    },
+    {
+        "question": "Which ship was sunk by INS Nirghat during Operation Trident, as described in the document?",
+        "options": ["A. PNS Muhafiz", "B. PNS Zulfiqar", "C. PNS Khaiber", "D. PNS Shahjahan"],
+        "answer": "C",
+        "difficulty": "Medium",
+        "category": "Operation Trident"
+    },
+    {
+        "question": "What significant naval tactic was used for the first time in the region during Operation Trident?",
+        "options": ["A. Submarine warfare", "B. Amphibious landing", "C. Anti-ship missiles", "D. Naval blockade"],
+        "answer": "C",
+        "difficulty": "Medium",
+        "category": "Naval Tactics"
+    },
+    {
+        "question": "How many Royal Indian Navy sloops were awarded the Battle of the Atlantic battle honour, according to the document?",
+        "options": ["A. Two", "B. Four", "C. Three", "D. Six"],
+        "answer": "C",
+        "difficulty": "Medium",
+        "category": "World War II"
+    },
+    {
+        "question": "What was the name of the British ship that sank in 1940, carrying Indian boy sailors, as detailed in the document?",
+        "options": ["A. HMS Duke of York", "B. HMS Kistna", "C. S.S. City of Benares", "D. HMS Godavari"],
+        "answer": "C",
+        "difficulty": "Hard",
+        "category": "World War II"
+    },
+    {
+        "question": "Which Indian Navy ship was visited by King George VI during its service in Scapa Flow in 1943?",
+        "options": ["A. HMIS Jumna", "B. HMIS Sutlej", "C. HMIS Godavari", "D. HMIS Cauvery"],
+        "answer": "C",
+        "difficulty": "Hard",
+        "category": "World War II"
+    },
+    {
+        "question": "What strategic concept does the Indian Navy recognize as part of its 'Strategy for Conflict' in the context of Operation Sindoor?",
+        "options": ["A. Deterrence", "B. Containment", "C. Compellence", "D. Isolation"],
+        "answer": "C",
+        "difficulty": "Hard",
+        "category": "Naval Strategy"
+    },
+    {
+        "question": "In which year did the Indian Navy begin exercises with Vietnam in the South China Sea, as noted in the document?",
+        "options": ["A. 2016", "B. 2017", "C. 2018", "D. 2019"],
+        "answer": "C",
+        "difficulty": "Hard",
+        "category": "Indo-Pacific Engagement"
+    },
+    {
+        "question": "How many merchant ships were part of the convoy OS 55KM escorted by HMIS Godavari in September 1943?",
+        "options": ["A. 56", "B. 46", "C. 82", "D. 19"],
+        "answer": "C",
+        "difficulty": "Hard",
+        "category": "World War II"
+    }
+]
+
+
+# --- Game Functions ---
+def create_background():
+    background = pygame.Surface((WIDTH, HEIGHT))
+    for y in range(HEIGHT):
+        color_ratio = y / HEIGHT
+        r = int(20 + (60 - 20) * color_ratio)
+        g = int(30 + (80 - 30) * color_ratio)
+        b = int(60 + (120 - 60) * color_ratio)
+        pygame.draw.line(background, (r, g, b), (0, y), (WIDTH, y))
+    for _ in range(100):
+        x = random.randint(0, WIDTH)
+        y = random.randint(0, HEIGHT // 2)
+        pygame.draw.circle(background, WHITE, (x, y), 1)
+    return background
+
+
+def draw_crosshair(surface, mouse_pos):
+    x, y = mouse_pos
+    time_offset = pygame.time.get_ticks() * 0.005
+    breathing = math.sin(time_offset) * 2
+    size = CROSSHAIR_SIZE + breathing
+    pygame.draw.circle(surface, RED, (x, y), int(size), 2)
+    pygame.draw.line(surface, RED, (x - size, y), (x + size, y), 2)
+    pygame.draw.line(surface, RED, (x, y - size), (x, y + size), 2)
+    # Center dot
+    pygame.draw.circle(surface, YELLOW, (x, y), 3)
+
+
+def draw_menu(surface):
+    # Draw background first
+    surface.blit(background_image, (0, 0))
+
+    # Add semi-transparent overlay for readability
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 180))  # Black with ~70% opacity
+    surface.blit(overlay, (0, 0))
+
+    # Rest of your existing menu drawing code...
+    title_text = title_font.render("Elite Sniper Academy", True, YELLOW)
+    subtitle_text = big_font.render("Defense Training Module 1", True, WHITE)
+
+    surface.blit(title_text, (WIDTH // 2 - title_text.get_width() // 2, HEIGHT // 4))
+    surface.blit(subtitle_text, (WIDTH // 2 - subtitle_text.get_width() // 2, HEIGHT // 4 + 80))
+
+    # Menu options
+    options = [
+        "1. Read PDF Training Manual",
+        "2. Take Quiz",
+        "3. Practice Range",
+        "4. Exit"
+    ]
+
+    for i, option in enumerate(options):
+        option_text = font_medium.render(option, True, WHITE)
+        surface.blit(option_text, (WIDTH // 2 - option_text.get_width() // 2, HEIGHT // 2 + i * 60))
+
+
+def quiz_game():
+    """Main quiz game function"""
+    global progress_updated
+
+    current_question = 0
+    score = 0
+    quiz_questions = random.sample(questions, 10)  # Select 10 random questions
+    selected_answer = None
+    show_result = False
+    result_timer = 0
+    start_time = pygame.time.get_ticks()
+    user_id = get_logged_in_user_id()
+    quiz_completed = False
+
+    # Create Next Module button (initially hidden)
+    next_module_button = Button(
+        WIDTH // 2 - 150, HEIGHT - 150, 300, 60,
+        "🎯 Open Module 8", (0, 150, 0), WHITE, font_medium
+    )
+    next_module_button.visible = False
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "exit"
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return "menu"
+                elif event.key == pygame.K_1 and not show_result and not quiz_completed:
+                    selected_answer = "A"
+                elif event.key == pygame.K_2 and not show_result and not quiz_completed:
+                    selected_answer = "B"
+                elif event.key == pygame.K_3 and not show_result and not quiz_completed:
+                    selected_answer = "C"
+                elif event.key == pygame.K_4 and not show_result and not quiz_completed:
+                    selected_answer = "D"
+                elif event.key == pygame.K_RETURN and selected_answer and not show_result and not quiz_completed:
+                    # Check answer
+                    if selected_answer == quiz_questions[current_question]["answer"]:
+                        score += 1
+                    show_result = True
+                    result_timer = pygame.time.get_ticks()
+                elif event.key == pygame.K_SPACE and show_result and not quiz_completed:
+                    # Next question
+                    current_question += 1
+                    if current_question >= len(quiz_questions):
+                        # Quiz completed
+                        quiz_completed = True
+                        end_time = pygame.time.get_ticks()
+                        time_taken = (end_time - start_time) // 1000
+
+                        # Save results and update progress
+                        save_quiz_result(user_id, 7, score, len(quiz_questions), time_taken)
+                        update_progress(user_id, 7, score)
+
+                        # Show Next Module button if score >= 8
+                        if score >= 8:
+                            next_module_button.visible = True
+                            unlock_next_module(user_id, 1)
+
+                        progress_updated = True
+                    else:
+                        selected_answer = None
+                        show_result = False
+
+            # Handle Next Module button click
+            if next_module_button.handle_event(event):
+                if open_module_8():
+                    # Don't exit immediately, let user continue or choose to exit
+                    print("Module 2 opened successfully!")
+                    # Optional: You can add a small delay or message here
+                    pygame.time.wait(1000)  # Wait 1 second to show the action worked
+                else:
+                    print("Failed to open Module 2")
+
+        # Update button
+        next_module_button.update()
+
+        # Draw everything
+        screen.blit(background_image, (0, 0))
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        screen.blit(overlay, (0, 0))
+        if not quiz_completed:
+            # Draw current question
+            question_data = quiz_questions[current_question]
+
+            # Question number and category
+            q_num_text = font_medium.render(f"Question {current_question + 1}/{len(quiz_questions)}", True, YELLOW)
+            screen.blit(q_num_text, (50, 50))
+
+            category_text = font.render(f"Category: {question_data['category']}", True, CYAN)
+            screen.blit(category_text, (50, 90))
+
+            difficulty_text = font.render(f"Difficulty: {question_data['difficulty']}", True, ORANGE)
+            screen.blit(difficulty_text, (50, 120))
+
+            # Question text
+            question_text = font_medium.render(question_data["question"], True, WHITE)
+            screen.blit(question_text, (50, 180))
+
+            # Options
+            for i, option in enumerate(question_data["options"]):
+                color = WHITE
+                if selected_answer == chr(65 + i):  # A, B, C, D
+                    color = YELLOW
+
+                option_text = font.render(f"{i + 1}. {option}", True, color)
+                screen.blit(option_text, (50, 240 + i * 40))
+
+            # Show result if answer was selected
+            if show_result:
+                correct_answer = question_data["answer"]
+                if selected_answer == correct_answer:
+                    result_text = font_medium.render("✅ Correct!", True, GREEN)
+                else:
+                    result_text = font_medium.render(f"❌ Wrong! Correct answer: {correct_answer}", True, RED)
+
+                screen.blit(result_text, (50, 400))
+
+                continue_text = font.render("Press SPACE to continue", True, WHITE)
+                screen.blit(continue_text, (50, 450))
+            else:
+                # Instructions
+                if selected_answer:
+                    instruction_text = font.render("Press ENTER to submit answer", True, GREEN)
+                else:
+                    instruction_text = font.render("Press 1-4 to select answer", True, WHITE)
+                screen.blit(instruction_text, (50, 400))
+
+        else:
+            # Quiz completed - show results
+
+            # Title
+            title_text = title_font.render("Quiz Completed!", True, YELLOW)
+            screen.blit(title_text, (WIDTH // 2 - title_text.get_width() // 2, 100))
+
+            # Score
+            score_text = big_font.render(f"Score: {score}/10", True, WHITE)
+            screen.blit(score_text, (WIDTH // 2 - score_text.get_width() // 2, 200))
+
+            # Performance message
+            if score >= 8:
+                performance_text = font_medium.render("🎉 Excellent! You can proceed to Module 8!", True, GREEN)
+                next_module_button.visible = True
+            elif score >= 6:
+                performance_text = font_medium.render("Good job! Keep practicing to improve.", True, YELLOW)
+            else:
+                performance_text = font_medium.render("Keep studying and try again!", True, RED)
+
+            screen.blit(performance_text, (WIDTH // 2 - performance_text.get_width() // 2, 280))
+
+            # Instructions
+            instruction_text = font.render("Press ESC to return to menu", True, WHITE)
+            screen.blit(instruction_text, (WIDTH // 2 - instruction_text.get_width() // 2, 350))
+
+            # Draw Next Module button if visible
+            next_module_button.draw(screen)
+
+        # Current score display
+        score_display = font.render(f"Current Score: {score}/{current_question + (1 if show_result else 0)}", True,
+                                    WHITE)
+        screen.blit(score_display, (WIDTH - 250, 50))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+class OptimizationSystem:
+    """Handles resource optimization using DP and greedy algorithms"""
+
+    def __init__(self):
+        self.simulation_cache = {}
+
+    def optimize_resource_allocation(self, resources, missions, constraints):
+        """Dynamic programming solution for resource allocation"""
+        memo = {}
+
+        def dp(remaining_resources, mission_index):
+            if mission_index >= len(missions):
+                return 0
+
+            key = (tuple(remaining_resources), mission_index)
+            if key in memo:
+                return memo[key]
+
+            # Option 1: Skip current mission
+            skip_value = dp(remaining_resources, mission_index + 1)
+
+            # Option 2: Take current mission (if resources allow)
+            take_value = 0
+            mission = missions[mission_index]
+            if all(r >= c for r, c in zip(remaining_resources, mission.cost)):
+                new_resources = [r - c for r, c in zip(remaining_resources, mission.cost)]
+                take_value = mission.value + dp(new_resources, mission_index + 1)
+
+            result = max(skip_value, take_value)
+            memo[key] = result
+            return result
+
+        return dp(resources, 0)
+
+    def greedy_tactical_response(self, threats, available_units):
+        """Greedy algorithm for immediate tactical decisions"""
+        threats.sort(key=lambda t: t.priority, reverse=True)
+        assignments = []
+        used_units = set()
+
+        for threat in threats:
+            best_unit = None
+            best_effectiveness = 0
+
+            for unit in available_units:
+                if unit.id not in used_units:
+                    effectiveness = self.calculate_effectiveness(unit, threat)
+                    if effectiveness > best_effectiveness:
+                        best_effectiveness = effectiveness
+                        best_unit = unit
+
+            if best_unit:
+                assignments.append((best_unit, threat))
+                used_units.add(best_unit.id)
+
+        return assignments
+
+    def simulate_engagement(self, force1, force2, terrain, weather):
+        """Memoized combat simulation"""
+        cache_key = (
+            tuple(sorted(unit.id for unit in force1.units)),
+            tuple(sorted(unit.id for unit in force2.units)),
+            terrain.type,
+            weather.condition
+        )
+
+        if cache_key in self.simulation_cache:
+            return self.simulation_cache[cache_key]
+
+        result = self.run_detailed_simulation(force1, force2, terrain, weather)
+        self.simulation_cache[cache_key] = result
+        return result
+
+    def calculate_effectiveness(self, unit, threat):
+        """Calculate unit effectiveness against threat"""
+        # Simplified calculation - replace with your actual logic
+        return unit.strength / max(1, threat.difficulty)
+
+    def run_detailed_simulation(self, force1, force2, terrain, weather):
+        """Run actual simulation (placeholder)"""
+        # Replace with your actual simulation logic
+        return {"outcome": "success", "casualties": 0.2}
+
+
+def pdf_reader():
+    """PDF reading function"""
+    try:
+        pdf_path = os.path.join(os.path.dirname(__file__), "study_materials", "module_7.pdf")  # Make sure this file exists
+        if not os.path.exists(pdf_path):
+            # Create a simple text message if PDF doesn't exist
+            screen.blit(background_image, (0, 0))
+            error_text = font_medium.render("PDF file 'defense_manual.pdf' not found!", True, RED)
+            instruction_text = font.render("Please place the PDF file in the same directory as this script", True,
+                                           WHITE)
+            back_text = font.render("Press ESC to return to menu", True, WHITE)
+
+            screen.blit(error_text, (WIDTH // 2 - error_text.get_width() // 2, HEIGHT // 2 - 50))
+            screen.blit(instruction_text, (WIDTH // 2 - instruction_text.get_width() // 2, HEIGHT // 2))
+            screen.blit(back_text, (WIDTH // 2 - back_text.get_width() // 2, HEIGHT // 2 + 50))
+
+            pygame.display.flip()
+
+            while True:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        return "exit"
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE:
+                            return "menu"
+
+        reader = PDFReader(pdf_path)
+
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "exit"
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return "menu"
+                    elif event.key == pygame.K_LEFT:
+                        reader.previous_page()
+                    elif event.key == pygame.K_RIGHT:
+                        reader.next_page()
+                    elif event.key == pygame.K_q and reader.can_take_quiz:
+                        return "quiz"
+
+            reader.update()
+
+            screen.blit(background_image, (0, 0))
+            reader.draw(screen)
+
+            # Instructions
+            instruction_text = font.render("Use LEFT/RIGHT arrows to navigate, ESC to return", True, WHITE)
+            screen.blit(instruction_text, (20, HEIGHT - 40))
+
+            pygame.display.flip()
+            clock.tick(60)
+
+    except Exception as e:
+        print(f"Error in PDF reader: {e}")
+        return "menu"
+
+
+def practice_range():
+    """Practice shooting range with optimization features"""
+    particles = ParticleSystem()
+    wind_system = WindSystem()
+    score_system = ScoreSystem()
+    optimizer = OptimizationSystem()  # New optimization system
+
+    bullets = []
+    bottles = []
+    last_shot_time = 0
+    shot_cooldown = 500  # milliseconds between shots
+    resource_level = 100  # New resource management system
+    efficiency_multiplier = 1.0  # New efficiency tracking
+
+    # Bottle class with threat priority
+    class BottleThreat(Bottle):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.priority = random.randint(1, 5) if self.correct else 0
+            self.id = random.randint(1000, 9999)
+
+    # Create bottles with threat levels
+    for i in range(8):
+        x = random.randint(100, WIDTH - 170)
+        y = random.randint(100, HEIGHT - 250)
+        label = random.choice(["Enemy", "Friendly", "Civilian", "Target"])
+        correct = label == "Enemy"
+        bottles.append(BottleThreat(label, x, y, correct))
+
+    background = background_image  # Use the loaded image
+
+    # New UI elements
+    resource_font = pygame.font.SysFont('arial', 20)
+    efficiency_font = pygame.font.SysFont('arial', 22, bold=True)
+
+    while True:
+        current_time = pygame.time.get_ticks()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "exit"
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return "menu"
+                elif event.key == pygame.K_o:  # New optimization key
+                    # Optimize target selection
+                    assignments = optimizer.greedy_tactical_response(
+                        [b for b in bottles if b.correct],
+                        [type('Unit', (), {'id': i, 'strength': 1}) for i in range(10)]
+                    )
+                    if assignments:
+                        # Highlight optimized targets
+                        for bottle in bottles:
+                            bottle.color = (0, 150, 0) if any(b.id == bottle.id for _, b in assignments) else (
+                            139, 69, 19)
+                        efficiency_multiplier = min(2.0, efficiency_multiplier + 0.2)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1 and current_time - last_shot_time > shot_cooldown and resource_level > 0:
+                    mouse_pos = pygame.mouse.get_pos()
+                    wind_effect = wind_system.get_effect()
+                    bullets.append(Bullet(mouse_pos[0], mouse_pos[1], wind_effect))
+                    score_system.total_shots += 1
+                    last_shot_time = current_time
+                    resource_level -= 5  # Resource cost per shot
+                    # Replenish resources for hits
+                    if score_system.streak > 3:
+                        resource_level = min(100, resource_level + 10)
+
+        # Update systems
+        wind_system.update()
+        particles.update()
+
+        # Slowly replenish resources
+        if current_time % 1000 < 16:  # About every second
+            resource_level = min(100, resource_level + 1)
+
+        # Update bullets
+        for bullet in bullets[:]:
+            bullet.move()
+            if not bullet.active:
+                bullets.remove(bullet)
+                score_system.add_miss()
+            else:
+                # Check collision with bottles
+                for bottle in bottles[:]:
+                    if bottle.rect.colliderect(pygame.Rect(bullet.x + 40, bullet.y + 30, 10, 10)):
+                        if bottle.correct:
+                            points = score_system.add_hit(current_time,
+                                                          bullet.distance_traveled) * efficiency_multiplier
+                            particles.add_hit_effect(bottle.rect.centerx, bottle.rect.centery)
+                            # Efficiency bonus for hitting high priority targets
+                            if bottle.priority >= 4:
+                                efficiency_multiplier = min(3.0, efficiency_multiplier + 0.1)
+                        else:
+                            score_system.add_miss()
+                            particles.add_explosion(bottle.rect.centerx, bottle.rect.centery, RED)
+                            efficiency_multiplier = max(0.5, efficiency_multiplier - 0.1)
+
+                        bottles.remove(bottle)
+                        bullets.remove(bullet)
+
+                        # Add new bottle
+                        x = random.randint(100, WIDTH - 170)
+                        y = random.randint(100, HEIGHT - 250)
+                        label = random.choice(["Enemy", "Friendly", "Civilian", "Target"])
+                        correct = label == "Enemy"
+                        bottles.append(BottleThreat(label, x, y, correct))
+                        break
+
+        # Update bottles
+        for bottle in bottles:
+            bottle.update()
+
+        # Draw everything
+        screen.blit(background, (0, 0))
+
+        # Draw bottles
+        for bottle in bottles:
+            bottle.draw(screen)
+            if bottle.correct:
+                # Draw priority indicator
+                priority_text = font_small.render(str(bottle.priority), True, WHITE)
+                screen.blit(priority_text, (bottle.rect.centerx - 5, bottle.rect.top - 20))
+
+        # Draw bullets
+        for bullet in bullets:
+            bullet.draw(screen)
+
+        # Draw particles
+        particles.draw(screen)
+
+        # Draw UI
+        wind_system.draw_indicator(screen)
+        score_system.draw_hud(screen)
+
+        # New resource UI
+        pygame.draw.rect(screen, BLACK, (WIDTH - 220, 120, 200, 25))
+        pygame.draw.rect(screen, BLUE, (WIDTH - 220, 120, int(200 * (resource_level / 100)), 25))
+        resource_text = resource_font.render(f"Resources: {resource_level}%", True, WHITE)
+        screen.blit(resource_text, (WIDTH - 215, 120))
+
+        # Efficiency UI
+        eff_color = GREEN if efficiency_multiplier >= 1.5 else YELLOW if efficiency_multiplier >= 1.0 else RED
+        eff_text = efficiency_font.render(f"Efficiency: x{efficiency_multiplier:.1f}", True, eff_color)
+        screen.blit(eff_text, (WIDTH - 220, 150))
+
+        # Draw crosshair
+        draw_crosshair(screen, pygame.mouse.get_pos())
+
+        # Enhanced instructions
+        instructions = [
+            "Left click to shoot",
+            "ESC to return",
+            "Press O to optimize targets",
+            f"Cooldown: {max(0, shot_cooldown - (current_time - last_shot_time)) // 1000}s"
+        ]
+
+        for i, instruction in enumerate(instructions):
+            text = font.render(instruction, True, WHITE)
+            screen.blit(text, (20, HEIGHT - 40 - i * 30))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+def main():
+    """Main game loop"""
+    global progress_updated
+
+    # Initialize database and create default user
+    init_database()
+    create_default_user()
+
+    current_state = "menu"
+
+    while True:
+        if current_state == "menu":
+            # Draw menu
+            draw_menu(screen)
+            pygame.display.flip()
+
+            # Handle menu input
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_1:
+                        current_state = "pdf"
+                    elif event.key == pygame.K_2:
+                        current_state = "quiz"
+                    elif event.key == pygame.K_3:
+                        current_state = "practice"
+                    elif event.key == pygame.K_4:
+                        pygame.quit()
+                        sys.exit()
+                    elif event.key == pygame.K_ESCAPE:
+                        pygame.quit()
+                        sys.exit()
+
+        elif current_state == "pdf":
+            result = pdf_reader()
+            if result == "exit":
+                pygame.quit()
+                sys.exit()
+            elif result == "quiz":
+                current_state = "quiz"
+            else:
+                current_state = "menu"
+
+        elif current_state == "quiz":
+            result = quiz_game()
+            if result == "exit":
+                pygame.quit()
+                sys.exit()
+            else:
+                current_state = "menu"
+
+        elif current_state == "practice":
+            result = practice_range()
+            if result == "exit":
+                pygame.quit()
+                sys.exit()
+            else:
+                current_state = "menu"
+
+        clock.tick(60)
+
+
+if __name__ == "__main__":
+    main()
